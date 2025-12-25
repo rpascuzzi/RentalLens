@@ -1,160 +1,152 @@
 import React, { useState, useCallback } from 'react';
-import { StyleSheet, Text, View, SectionList, Image, ActivityIndicator, TouchableOpacity } from 'react-native';
+import { StyleSheet, Text, View, FlatList, TouchableOpacity, TextInput, Alert, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, router } from 'expo-router';
 import { FontAwesome } from '@expo/vector-icons';
-import { supabase } from '@/lib/supabase';
-import { generateAndShareReport } from '@/lib/pdf';
+import { supabase, Property } from '@/lib/supabase';
 
-interface InventoryItem {
-  id: string;
-  created_at: string;
-  room_name: string;
-  status: string;
-  image_path: string;
-  ai_analysis: any; // Allow flexible structure to support location field
-}
-
-interface RoomSection {
-  title: string;
-  data: InventoryItem[];
-}
-
-export default function HomeScreen() {
-  const [sections, setSections] = useState<RoomSection[]>([]);
+export default function PropertyListScreen() {
+  const [properties, setProperties] = useState<Property[]>([]);
   const [loading, setLoading] = useState(false);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newPropName, setNewPropName] = useState('');
+  const [newPropAddress, setNewPropAddress] = useState('');
 
-  function groupDataByRoom(data: InventoryItem[]): RoomSection[] {
-    const groups: { [key: string]: InventoryItem[] } = {};
+  useFocusEffect(
+    useCallback(() => {
+      fetchProperties();
+    }, [])
+  );
 
-    data.forEach(item => {
-      // Normalize room name: trim whitespace
-      const room = (item.room_name || 'Unassigned').trim();
-      if (!groups[room]) {
-        groups[room] = [];
-      }
-      groups[room].push(item);
-    });
-
-    const result = Object.keys(groups)
-      .sort() // Sort rooms alphabetically
-      .map(room => ({
-        title: room,
-        data: groups[room],
-      }));
-
-    return result;
-  }
-
-  async function fetchInventory() {
+  async function fetchProperties() {
     try {
       setLoading(true);
       const { data, error } = await supabase
-        .from('scans')
+        .from('properties')
         .select('*')
         .order('created_at', { ascending: false });
 
       if (error) {
-        console.error('Error fetching inventory:', error);
+        console.error('Error fetching properties:', error);
       } else {
-        const groupedData = groupDataByRoom(data || []);
-        setSections(groupedData);
+        setProperties(data || []);
       }
     } catch (error) {
-      console.error('Error fetching inventory:', error);
+      console.error('Error fetching properties:', error);
     } finally {
       setLoading(false);
     }
   }
 
-  useFocusEffect(
-    useCallback(() => {
-      fetchInventory();
-    }, [])
-  );
-
-  const getImageUrl = (path: string) => {
-    return supabase.storage.from('Photos').getPublicUrl(path).data.publicUrl;
-  };
-
-  const renderSectionHeader = ({ section: { title } }: { section: { title: string } }) => (
-    <View style={styles.sectionHeader}>
-      <Text style={styles.sectionHeaderText}>{title}</Text>
-    </View>
-  );
-
-  const renderItem = ({ item }: { item: InventoryItem }) => {
-    let totalItems = 0;
-    let location = '';
-
-    const analysis = item.ai_analysis;
-    if (Array.isArray(analysis)) {
-      totalItems = analysis.reduce((sum, i) => sum + i.count, 0);
-    } else if (analysis && typeof analysis === 'object') {
-      if (Array.isArray(analysis.items)) {
-        totalItems = analysis.items.reduce((sum: any, i: any) => sum + i.count, 0);
-      }
-      if (analysis.location) {
-        location = analysis.location;
-      }
+  async function addProperty() {
+    if (!newPropName.trim() || !newPropAddress.trim()) {
+      Alert.alert('Error', 'Please enter both name and address');
+      return;
     }
 
-    return (
-      <TouchableOpacity 
-        style={styles.card}
-        onPress={() => router.push({ pathname: '/detail', params: { id: item.id } })}
-      >
-        <Image 
-          source={{ uri: getImageUrl(item.image_path) }} 
-          style={styles.thumbnail} 
-        />
-        <View style={styles.cardContent}>
-          <Text style={styles.roomName}>{location || item.room_name}</Text>
-          <Text style={styles.date}>{new Date(item.created_at).toLocaleDateString()}</Text>
-          <View style={styles.statsContainer}>
-            <Text style={styles.statusText}>{item.status}</Text>
-            {item.status === 'complete' && (
-              <Text style={styles.itemCount}>{totalItems} Items Found</Text>
-            )}
-          </View>
-        </View>
-      </TouchableOpacity>
+    try {
+      const { error } = await supabase
+        .from('properties')
+        .insert({
+          name: newPropName.trim(),
+          address: newPropAddress.trim(),
+        });
+
+      if (error) throw error;
+
+      setNewPropName('');
+      setNewPropAddress('');
+      setShowAddForm(false);
+      fetchProperties();
+    } catch (error: any) {
+      Alert.alert('Error', error.message);
+    }
+  }
+
+  async function deleteProperty(id: string) {
+    Alert.alert(
+      "Delete Property",
+      "Are you sure? This will delete the property AND all its inventory scans.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { 
+          text: "Delete", 
+          style: "destructive", 
+          onPress: async () => {
+            try {
+              // Delete property (Cascade should handle scans, but we can be explicit if needed)
+              const { error } = await supabase.from('properties').delete().eq('id', id);
+              if (error) throw error;
+              fetchProperties();
+            } catch (error: any) {
+              Alert.alert('Error', error.message);
+            }
+          }
+        }
+      ]
     );
-  };
+  }
+
+  const renderItem = ({ item }: { item: Property }) => (
+    <TouchableOpacity 
+      style={styles.card}
+      onPress={() => router.push({ pathname: '/property/[id]', params: { id: item.id } })}
+    >
+      <View style={styles.iconContainer}>
+        <FontAwesome name="building-o" size={24} color="#007AFF" />
+      </View>
+      <View style={styles.cardContent}>
+        <Text style={styles.propName}>{item.name}</Text>
+        <Text style={styles.propAddress}>{item.address}</Text>
+      </View>
+      <TouchableOpacity onPress={() => deleteProperty(item.id)} style={styles.deleteButton}>
+        <FontAwesome name="trash-o" size={20} color="#FF3B30" />
+      </TouchableOpacity>
+    </TouchableOpacity>
+  );
 
   return (
     <SafeAreaView style={styles.container}>
-      <View style={styles.headerContainer}>
-        <View style={styles.headerTextContainer}>
-          <Text style={styles.title}>RentalLens</Text>
-          <Text style={styles.subtitle}>Active Properties</Text>
-        </View>
-        <TouchableOpacity 
-          style={styles.exportButton} 
-          onPress={() => generateAndShareReport(sections)}
-          disabled={sections.length === 0}
-        >
-          <FontAwesome name="file-pdf-o" size={20} color={sections.length === 0 ? '#ccc' : '#007AFF'} />
-          <Text style={[styles.exportText, { color: sections.length === 0 ? '#ccc' : '#007AFF' }]}>Export</Text>
+      <View style={styles.header}>
+        <Text style={styles.title}>My Properties</Text>
+        <TouchableOpacity onPress={() => setShowAddForm(!showAddForm)} style={styles.addButton}>
+          <FontAwesome name={showAddForm ? "minus" : "plus"} size={20} color="#007AFF" />
         </TouchableOpacity>
       </View>
 
-      {loading && sections.length === 0 ? (
-        <View style={styles.centerContainer}>
-          <ActivityIndicator size="large" color="#007AFF" />
+      {showAddForm && (
+        <View style={styles.addForm}>
+          <TextInput
+            style={styles.input}
+            placeholder="Property Name (e.g. Downtown Apt)"
+            value={newPropName}
+            onChangeText={setNewPropName}
+          />
+          <TextInput
+            style={styles.input}
+            placeholder="Address"
+            value={newPropAddress}
+            onChangeText={setNewPropAddress}
+          />
+          <TouchableOpacity style={styles.submitButton} onPress={addProperty}>
+            <Text style={styles.submitButtonText}>Create Property</Text>
+          </TouchableOpacity>
         </View>
-      ) : sections.length === 0 ? (
+      )}
+
+      {loading && properties.length === 0 ? (
+        <ActivityIndicator style={{ marginTop: 20 }} size="large" color="#007AFF" />
+      ) : properties.length === 0 ? (
         <View style={styles.centerContainer}>
-          <Text style={styles.emptyText}>No properties found. Start by scanning a room.</Text>
+          <Text style={styles.emptyText}>No properties found.</Text>
+          <Text style={styles.emptySubText}>Tap + to add your first property.</Text>
         </View>
       ) : (
-        <SectionList
-          sections={sections}
+        <FlatList
+          data={properties}
           renderItem={renderItem}
-          renderSectionHeader={renderSectionHeader}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.listContent}
-          stickySectionHeadersEnabled={false}
         />
       )}
     </SafeAreaView>
@@ -162,120 +154,58 @@ export default function HomeScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: 'white',
-  },
-  headerContainer: {
+  container: { flex: 1, backgroundColor: 'white' },
+  header: {
     padding: 20,
-    backgroundColor: 'white',
-    borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
   },
-  headerTextContainer: {
-    flex: 1,
-  },
-  exportButton: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 10,
-  },
-  exportText: {
-    fontSize: 12,
-    marginTop: 4,
-    fontWeight: '600',
-  },
-  title: {
-    fontSize: 32,
-    fontWeight: 'bold',
-  },
-  subtitle: {
-    fontSize: 18,
-    color: '#666',
-    marginTop: 4,
-  },
-  centerContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 40,
-  },
-  emptyText: {
-    fontSize: 16,
-    color: 'gray',
-    textAlign: 'center',
-  },
-  listContent: {
-    padding: 15,
-  },
-  sectionHeader: {
-    backgroundColor: '#f9f9f9',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 6,
+  title: { fontSize: 28, fontWeight: 'bold' },
+  addButton: { padding: 10 },
+  addForm: { padding: 20, backgroundColor: '#f9f9f9', borderBottomWidth: 1, borderBottomColor: '#eee' },
+  input: {
+    backgroundColor: 'white',
+    padding: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#ddd',
     marginBottom: 10,
-    marginTop: 5,
   },
-  sectionHeaderText: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#333',
-  },
+  submitButton: { backgroundColor: '#007AFF', padding: 12, borderRadius: 8, alignItems: 'center' },
+  submitButtonText: { color: 'white', fontWeight: 'bold' },
+  listContent: { padding: 15 },
   card: {
     flexDirection: 'row',
     backgroundColor: 'white',
     borderRadius: 12,
-    padding: 12,
+    padding: 15,
     marginBottom: 15,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-    borderWidth: 1,
-    borderColor: '#f0f0f0',
-  },
-  thumbnail: {
-    width: 80,
-    height: 80,
-    borderRadius: 8,
-    backgroundColor: '#f0f0f0',
-  },
-  cardContent: {
-    flex: 1,
-    marginLeft: 15,
-    justifyContent: 'center',
-  },
-  roomName: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 4,
-  },
-  date: {
-    fontSize: 14,
-    color: '#999',
-    marginBottom: 8,
-  },
-  statsContainer: {
-    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    borderWidth: 1,
+    borderColor: '#eee',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 2,
   },
-  statusText: {
-    fontSize: 12,
-    color: '#666',
-    textTransform: 'capitalize',
-    backgroundColor: '#f5f5f5',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 4,
+  iconContainer: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: '#eef6ff',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 15,
   },
-  itemCount: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#007AFF',
-  },
+  cardContent: { flex: 1 },
+  propName: { fontSize: 18, fontWeight: 'bold', marginBottom: 4 },
+  propAddress: { fontSize: 14, color: '#666' },
+  deleteButton: { padding: 10 },
+  centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  emptyText: { fontSize: 18, fontWeight: 'bold', color: '#333' },
+  emptySubText: { fontSize: 14, color: '#666', marginTop: 5 },
 });

@@ -1,9 +1,10 @@
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { useRef, useState } from 'react';
+import { useRef, useState, useCallback, useEffect } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View, Button, Image, Alert, ActivityIndicator, FlatList, TextInput } from 'react-native';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { supabase } from '@/lib/supabase';
+import { FontAwesome } from '@expo/vector-icons';
+import { supabase, Property } from '@/lib/supabase';
 import { analyzeImage } from '@/lib/gemini';
 
 interface AnalysisItem {
@@ -13,6 +14,10 @@ interface AnalysisItem {
 }
 
 export default function ScanScreen() {
+  const params = useLocalSearchParams<{ propertyId: string }>();
+  const [selectedPropId, setSelectedPropId] = useState<string | null>(params.propertyId || null);
+  const [properties, setProperties] = useState<Property[]>([]);
+  
   const [permission, requestPermission] = useCameraPermissions();
   const [photo, setPhoto] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -21,6 +26,59 @@ export default function ScanScreen() {
   const [roomName, setRoomName] = useState('Kitchen');
   const [locationName, setLocationName] = useState('');
   const cameraRef = useRef<CameraView>(null);
+
+  // If params change (e.g. navigation from property detail), update state
+  useEffect(() => {
+    if (params.propertyId) {
+      setSelectedPropId(params.propertyId);
+    }
+  }, [params.propertyId]);
+
+  // Persist selected property ID even if params are cleared (optional but safer)
+  useEffect(() => {
+    if (selectedPropId) {
+      // Logic to ensure ID is tracked if needed
+    }
+  }, [selectedPropId]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!selectedPropId) {
+        fetchProperties();
+      }
+    }, [selectedPropId])
+  );
+
+  async function fetchProperties() {
+    const { data } = await supabase.from('properties').select('*').order('created_at', { ascending: false });
+    if (data) setProperties(data);
+  }
+
+  if (!selectedPropId) {
+    return (
+      <SafeAreaView style={styles.selectionContainer}>
+        <Text style={styles.selectionTitle}>Select Property</Text>
+        <FlatList
+          data={properties}
+          keyExtractor={(item) => item.id}
+          renderItem={({ item }) => (
+            <TouchableOpacity 
+              style={styles.propertyCard} 
+              onPress={() => setSelectedPropId(item.id)}
+            >
+              <FontAwesome name="building" size={24} color="#007AFF" style={styles.propertyIcon} />
+              <View>
+                <Text style={styles.propertyName}>{item.name}</Text>
+                <Text style={styles.propertyAddress}>{item.address}</Text>
+              </View>
+              <FontAwesome name="chevron-right" size={16} color="#ccc" style={{ marginLeft: 'auto' }} />
+            </TouchableOpacity>
+          )}
+          contentContainerStyle={styles.listContent}
+        />
+      </SafeAreaView>
+    );
+  }
 
   if (!permission) {
     // Camera permissions are still loading.
@@ -89,6 +147,11 @@ export default function ScanScreen() {
         setAnalyzing(false);
       }
 
+      if (!selectedPropId) {
+        Alert.alert('Error', 'Every item needs a home. Please select a property first.');
+        return;
+      }
+
       console.log('Attempting database insert into scans table...');
       const { data: dbData, error: dbError } = await supabase
         .from('scans')
@@ -96,6 +159,7 @@ export default function ScanScreen() {
           image_path: fileName,
           status: results.length > 0 ? 'complete' : 'uploaded',
           room_name: roomName,
+          property_id: selectedPropId,
           // Store location inside ai_analysis JSON since we can't easily add a column
           ai_analysis: { 
             items: results,
@@ -181,7 +245,9 @@ export default function ScanScreen() {
               onPress={() => {
                 setPhoto(null);
                 setAnalysisResults(null);
-                router.replace('/');
+                // Navigate to the property detail for the current property
+                router.replace({ pathname: '/property/[id]', params: { id: selectedPropId } });
+                setSelectedPropId(null); // Reset if they come back to scan tab directly
               }}
             >
               <Text style={styles.finishText}>Finish Room</Text>
@@ -251,6 +317,35 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     backgroundColor: 'black',
+  },
+  selectionContainer: {
+    flex: 1,
+    backgroundColor: 'white',
+  },
+  selectionTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    padding: 20,
+    textAlign: 'center',
+  },
+  propertyCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 20,
+    backgroundColor: 'white',
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  propertyIcon: {
+    marginRight: 15,
+  },
+  propertyName: {
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  propertyAddress: {
+    fontSize: 14,
+    color: '#666',
   },
   camera: {
     flex: 1,
@@ -414,5 +509,14 @@ const styles = StyleSheet.create({
     color: '#007AFF',
     fontSize: 18,
     fontWeight: 'bold',
+  },
+  text: {
+    fontSize: 18,
+    marginBottom: 20,
+    textAlign: 'center',
+    color: '#333',
+  },
+  listContent: {
+    padding: 15,
   },
 });
