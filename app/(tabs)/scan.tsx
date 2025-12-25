@@ -23,6 +23,7 @@ export default function ScanScreen() {
   const [uploading, setUploading] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisResults, setAnalysisResults] = useState<AnalysisItem[] | null>(null);
+  const [currentScanId, setCurrentScanId] = useState<string | null>(null);
   const [roomName, setRoomName] = useState('Kitchen');
   const [locationName, setLocationName] = useState('');
   const cameraRef = useRef<CameraView>(null);
@@ -105,6 +106,29 @@ export default function ScanScreen() {
     }
   }
 
+  const updateAnalysisItem = async (index: number, updates: Partial<AnalysisItem>) => {
+    if (!analysisResults || !currentScanId) return;
+    
+    const newResults = [...analysisResults];
+    newResults[index] = { ...newResults[index], ...updates };
+    setAnalysisResults(newResults);
+
+    // Persist changes to DB
+    try {
+      await supabase
+        .from('scans')
+        .update({ 
+          ai_analysis: { 
+            items: newResults,
+            location: locationName 
+          }
+        })
+        .eq('id', currentScanId);
+    } catch (error) {
+      console.error('Failed to auto-save scan edits:', error);
+    }
+  };
+
   async function uploadAndAnalyzePhoto() {
     if (!photo) return;
 
@@ -175,6 +199,9 @@ export default function ScanScreen() {
       }
       
       console.log('Database insert successful:', dbData);
+      if (dbData && dbData[0]) {
+        setCurrentScanId(dbData[0].id);
+      }
 
       const totalItems = Array.isArray(results) 
         ? results.reduce((sum: number, item: AnalysisItem) => sum + (item.count || 0), 0)
@@ -190,11 +217,22 @@ export default function ScanScreen() {
     }
   }
 
-  const renderItem = ({ item }: { item: AnalysisItem }) => (
+  const renderItem = ({ item, index }: { item: AnalysisItem, index: number }) => (
     <View style={styles.resultItem}>
-      <Text style={styles.resultText}>{item.name}</Text>
-      <Text style={styles.resultText}>{item.count}</Text>
-      <Text style={styles.resultText}>{item.condition}</Text>
+      <TextInput
+        style={[styles.resultText, styles.editableInput]}
+        value={item.name}
+        onChangeText={(text) => updateAnalysisItem(index, { name: text })}
+      />
+      <View style={styles.miniStepper}>
+        <TouchableOpacity onPress={() => updateAnalysisItem(index, { count: Math.max(0, item.count - 1) })}>
+          <FontAwesome name="minus-circle" size={20} color="#FF3B30" />
+        </TouchableOpacity>
+        <Text style={styles.itemCountText}>{item.count}</Text>
+        <TouchableOpacity onPress={() => updateAnalysisItem(index, { count: item.count + 1 })}>
+          <FontAwesome name="plus-circle" size={20} color="#34C759" />
+        </TouchableOpacity>
+      </View>
     </View>
   );
 
@@ -212,11 +250,10 @@ export default function ScanScreen() {
 
         {analysisResults && (
           <View style={styles.resultsContainer}>
-            <Text style={styles.resultsTitle}>Analysis Results</Text>
+            <Text style={styles.resultsTitle}>Analyze Results</Text>
             <View style={styles.resultHeader}>
-              <Text style={styles.headerText}>Item</Text>
-              <Text style={styles.headerText}>Qty</Text>
-              <Text style={styles.headerText}>Condition</Text>
+              <Text style={[styles.headerText, { flex: 1 }]}>Item</Text>
+              <Text style={[styles.headerText, { width: 80, textAlign: 'center' }]}>Qty</Text>
             </View>
             <FlatList
               data={analysisResults}
@@ -449,6 +486,24 @@ const styles = StyleSheet.create({
   },
   resultText: {
     flex: 1,
+  },
+  editableInput: {
+    backgroundColor: '#f9f9f9',
+    padding: 5,
+    borderRadius: 4,
+    borderWidth: 0.5,
+    borderColor: '#ddd',
+  },
+  miniStepper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: 80,
+    justifyContent: 'space-between',
+    marginLeft: 10,
+  },
+  itemCountText: {
+    fontWeight: 'bold',
+    fontSize: 16,
   },
   totalContainer: {
     marginTop: 10,
