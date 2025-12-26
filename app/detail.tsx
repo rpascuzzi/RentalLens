@@ -282,6 +282,20 @@ export default function DetailScreen() {
         </TouchableOpacity>
 
         <TouchableOpacity 
+          style={styles.auditButton} 
+          onPress={() => router.push({
+            pathname: '/audit/camera',
+            params: { 
+              originalImageUri: getImageUrl(scan.image_path),
+              expectedItems: JSON.stringify(items)
+            }
+          })}
+        >
+          <FontAwesome name="check-square-o" size={20} color="white" />
+          <Text style={styles.auditButtonText}>Audit This Scan</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity 
           style={styles.deleteButton} 
           onPress={deleteScan}
           disabled={saving}
@@ -423,6 +437,22 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 18,
     fontWeight: 'bold',
+  },
+  auditButton: {
+    backgroundColor: '#5856D6',
+    padding: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginTop: 10,
+    marginBottom: 10,
+    flexDirection: 'row',
+    justifyContent: 'center',
+  },
+  auditButtonText: {
+    color: 'white',
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginLeft: 10,
   },
   sectionHeader: {
     flexDirection: 'row',
