@@ -4,8 +4,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, router, useLocalSearchParams, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { FontAwesome } from '@expo/vector-icons';
-import { supabase } from '@/lib/supabase';
-import { generateAndShareReport } from '@/lib/pdf';
+import { supabase, AuditSession } from '@/lib/supabase';
+import { generateAndShareReport, generateAndShareAuditReport } from '@/lib/pdf';
 
 interface InventoryItem {
   id: string;
@@ -28,6 +28,10 @@ export default function PropertyDetailScreen() {
   const [propertyName, setPropertyName] = useState('Property');
   const [propertyAddress, setPropertyAddress] = useState('');
   
+  // Audit History State
+  const [pastAudits, setPastAudits] = useState<AuditSession[]>([]);
+  const [generatingAuditId, setGeneratingAuditId] = useState<string | null>(null);
+
   // Edit State
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [editName, setEditName] = useState('');
@@ -40,6 +44,7 @@ export default function PropertyDetailScreen() {
   useFocusEffect(
     useCallback(() => {
       fetchInventory();
+      fetchPastAudits();
     }, [id])
   );
 
@@ -50,6 +55,79 @@ export default function PropertyDetailScreen() {
       setPropertyAddress(data.address);
       setEditName(data.name);
       setEditAddress(data.address);
+    }
+  }
+
+  async function fetchPastAudits() {
+    console.log('--- Fetching Past Audits ---');
+    console.log('Property ID:', id);
+    const { data, error } = await supabase
+      .from('audit_sessions')
+      .select('*')
+      .eq('property_id', id)
+      .order('created_at', { ascending: false });
+    
+    if (error) {
+      console.error('Error fetching audits:', error);
+    }
+    
+    console.log('Raw data from DB:', JSON.stringify(data, null, 2));
+    
+    // Check both 'completed' and any other potential status values
+    // Sometimes there might be a typo or case sensitivity issue
+    const completed = data?.filter(a => a.status === 'completed') || [];
+    console.log('Completed audits count:', completed.length);
+    
+    setPastAudits(completed);
+  }
+
+  async function generateAuditReportForSession(session: AuditSession) {
+    try {
+      setGeneratingAuditId(session.id);
+      
+      const { data: records, error: rError } = await supabase
+        .from('audit_records')
+        .select('*')
+        .eq('session_id', session.id);
+      if (rError) throw rError;
+
+      const { data: scans, error: sError } = await supabase
+        .from('scans')
+        .select('*')
+        .eq('property_id', id);
+      if (sError) throw sError;
+
+      const reportRooms: any[] = [];
+      records.forEach(record => {
+        const matchingScan = scans.find(s => s.id === record.original_scan_id);
+        const roomName = matchingScan?.room_name || 'Unknown Room';
+        const analysis = matchingScan?.ai_analysis as any;
+        const scanName = Array.isArray(analysis) ? 'Scan' : (analysis?.location || 'Scan');
+        
+        let roomGroup = reportRooms.find(r => r.roomName === roomName);
+        if (!roomGroup) {
+          roomGroup = { roomName, scans: [] };
+          reportRooms.push(roomGroup);
+        }
+        
+        roomGroup.scans.push({
+          scanName,
+          originalImageUri: matchingScan ? supabase.storage.from('Photos').getPublicUrl(matchingScan.image_path).data.publicUrl : '',
+          auditImageUri: supabase.storage.from('Photos').getPublicUrl(record.audit_image_path).data.publicUrl,
+          results: record.comparison_json || []
+        });
+      });
+
+      await generateAndShareAuditReport({
+        propertyName,
+        sessionName: session.name,
+        rooms: reportRooms
+      });
+    } catch (error) {
+      console.error('Audit report generation failed:', error);
+      Alert.alert('Error', 'Failed to generate audit report.');
+    } finally {
+      setGeneratingAuditId(null);
     }
   }
 
@@ -106,6 +184,46 @@ export default function PropertyDetailScreen() {
     }
   }
 
+  async function startNewAudit() {
+    // Simple prompt for audit session name
+    const sessionName = `Audit - ${new Date().toLocaleString(undefined, { 
+      year: 'numeric', 
+      month: 'numeric', 
+      day: 'numeric', 
+      hour: '2-digit', 
+      minute: '2-digit'
+    })}`;
+    
+    Alert.alert(
+      "Start New Audit",
+      `Begin a new audit session for this property?\nName: ${sessionName}`,
+      [
+        { text: "Cancel", style: "cancel" },
+        { 
+          text: "Start", 
+          onPress: async () => {
+            try {
+              const { data, error } = await supabase
+                .from('audit_sessions')
+                .insert({
+                  property_id: id,
+                  name: sessionName,
+                  status: 'in_progress'
+                })
+                .select()
+                .single();
+
+              if (error) throw error;
+              router.push(`/audit/${data.id}/checklist`);
+            } catch (error: any) {
+              Alert.alert('Error', error.message);
+            }
+          }
+        }
+      ]
+    );
+  }
+
   async function deleteAllContents() {
     Alert.alert(
       "Delete All Contents",
@@ -116,8 +234,13 @@ export default function PropertyDetailScreen() {
           text: "Delete All", 
           style: "destructive", 
           onPress: async () => {
-            await supabase.from('scans').delete().eq('property_id', id);
-            fetchInventory();
+            try {
+              const { error } = await supabase.from('scans').delete().eq('property_id', id);
+              if (error) throw error;
+              fetchInventory();
+            } catch (error: any) {
+              Alert.alert('Error', `Failed to delete contents: ${error.message}`);
+            }
           }
         }
       ]
@@ -203,6 +326,12 @@ export default function PropertyDetailScreen() {
           >
             <FontAwesome name="file-pdf-o" size={20} color={sections.length === 0 ? '#ccc' : '#007AFF'} />
           </TouchableOpacity>
+          <TouchableOpacity 
+            style={styles.actionButton} 
+            onPress={startNewAudit}
+          >
+            <FontAwesome name="clipboard" size={20} color="#007AFF" />
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -273,9 +402,42 @@ export default function PropertyDetailScreen() {
           contentContainerStyle={styles.listContent}
           stickySectionHeadersEnabled={false}
           ListFooterComponent={
-            <TouchableOpacity style={styles.deleteAllButton} onPress={deleteAllContents}>
-              <Text style={styles.deleteAllText}>Delete All Contents</Text>
-            </TouchableOpacity>
+            <View style={{ paddingBottom: 40 }}>
+              {pastAudits.length > 0 && (
+                <View style={styles.historySection}>
+                  <Text style={styles.historyTitle}>Past Audits</Text>
+                  {pastAudits.map(audit => (
+                    <View key={audit.id} style={styles.historyRow}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.auditName}>{audit.name}</Text>
+                        <Text style={styles.auditDate}>
+                          {new Date(audit.created_at).toLocaleString(undefined, { 
+                            year: 'numeric', 
+                            month: 'numeric', 
+                            day: 'numeric', 
+                            hour: '2-digit', 
+                            minute: '2-digit'
+                          })}
+                        </Text>
+                      </View>
+                      <TouchableOpacity 
+                        onPress={() => generateAuditReportForSession(audit)}
+                        disabled={generatingAuditId === audit.id}
+                      >
+                        {generatingAuditId === audit.id ? (
+                          <ActivityIndicator size="small" color="#007AFF" />
+                        ) : (
+                          <FontAwesome name="file-pdf-o" size={20} color="#007AFF" />
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </View>
+              )}
+              <TouchableOpacity style={styles.deleteAllButton} onPress={deleteAllContents}>
+                <Text style={styles.deleteAllText}>Delete All Contents</Text>
+              </TouchableOpacity>
+            </View>
           }
         />
       )}
@@ -345,8 +507,13 @@ const styles = StyleSheet.create({
   itemCount: { fontSize: 14, fontWeight: '600', color: '#007AFF' },
   addFirstButton: { backgroundColor: '#007AFF', padding: 12, borderRadius: 8 },
   addFirstText: { color: 'white', fontWeight: 'bold' },
-  deleteAllButton: { marginTop: 20, padding: 15, backgroundColor: '#FF3B30', borderRadius: 10, alignItems: 'center' },
+  deleteAllButton: { marginTop: 40, padding: 15, backgroundColor: '#FF3B30', borderRadius: 10, alignItems: 'center' },
   deleteAllText: { color: 'white', fontWeight: 'bold' },
+  historySection: { marginTop: 30, borderTopWidth: 1, borderTopColor: '#eee', paddingTop: 20 },
+  historyTitle: { fontSize: 20, fontWeight: 'bold', marginBottom: 15 },
+  historyRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f9f9f9', padding: 15, borderRadius: 10, marginBottom: 10 },
+  auditName: { fontSize: 16, fontWeight: 'bold' },
+  auditDate: { fontSize: 12, color: '#666' },
   bottomNav: {
     position: 'absolute',
     bottom: 0,
